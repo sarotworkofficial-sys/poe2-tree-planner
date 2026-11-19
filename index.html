@@ -370,11 +370,37 @@ function computeRoute(cls, style, must = []) {
   return stages;
 }
 // accepts any case and spaces ("melee mace", "bear, fire"); returns null for unknown styles
-function normStyle(style) {
+// The bot sometimes invents style names (e.g. "Elemental"), so common words map to real
+// styles, unknown words are dropped, and if nothing is left the class's first ready-made
+// route is used (with a warning) instead of showing an empty tree.
+const STYLE_ALIAS = {
+  elemental: "Lightning,Cold,Fire", element: "Lightning,Cold,Fire", spell: "Lightning,Cold,Fire",
+  caster: "Lightning,Cold,Fire", mage: "Lightning,Cold,Fire", ice: "Cold", frost: "Cold",
+  freeze: "Cold", shock: "Lightning", thunder: "Lightning", storm: "Lightning", ignite: "Fire",
+  burn: "Fire", poison: "Chaos", melee: "MeleeMace", mace: "MeleeMace", strike: "MeleeMace",
+  hammer: "Slam", archer: "Bow", ranged: "Bow", projectile: "Bow", grenade: "Crossbow",
+  summon: "Minion", minions: "Minion", companion: "Minion", crit: "Critical",
+  staff: "Quarterstaff", unarmed: "Quarterstaff", shapeshifter: "Shapeshift", wolf: "Shapeshift",
+};
+let styleNote = "";
+function normStyle(style, cls) {
+  styleNote = "";
   if (!routes || !style) return null;
   const names = Object.keys(routes.rules.styles), byLower = new Map(names.map(n => [n.toLowerCase(), n]));
-  const parts = style.split(",").map(s => byLower.get(s.replace(/\s+/g, "").toLowerCase()));
-  return parts.length && parts.every(Boolean) ? [...new Set(parts)].join(",") : null;
+  const out = [], unknown = [];
+  for (const raw of style.split(",")) {
+    const k = raw.replace(/\s+/g, "").toLowerCase();
+    if (!k) continue;
+    const hit = byLower.get(k) || (STYLE_ALIAS[k] && STYLE_ALIAS[k].split(","));
+    if (hit) out.push(...[].concat(hit)); else unknown.push(raw.trim());
+  }
+  if (!out.length) {
+    const first = Object.values(routes.routes).find(r => r.class === cls);
+    if (!first) return null;
+    out.push(first.theme.replace(/ /g, ""));
+    styleNote = `ไม่รู้จักสาย "${style}" จึงแสดงสาย ${out[0]} แทน (สายที่มี: ${names.join(", ")})`;
+  } else if (unknown.length) styleNote = `ไม่รู้จักสาย: ${unknown.join(", ")} (ข้ามไป)`;
+  return [...new Set(out)].join(",");
 }
 function routeStages(cls, style, must = []) {
   if (!style || !starts.has(cls)) return null;
@@ -392,7 +418,7 @@ async function readUrl() {
   let usedRoute = false;
   if (p.get("r") || p.get("style")) {
     try { routes = await (await fetch("routes.json", { cache: "no-cache" })).json(); } catch { routes = null; }
-    let cls = p.get("class"), style = normStyle(p.get("style"));
+    let cls = p.get("class"), style = normStyle(p.get("style"), p.get("class"));
     const old = routes && p.get("r") && routes.routes[p.get("r")];  // older ?r=Class-Style links
     if (old) { cls = old.class; style = old.theme.replace(/ /g, ""); }
     if (starts.has(cls)) state.cls = cls;
@@ -409,7 +435,8 @@ async function readUrl() {
       p.set("level", level);
       state.targets = [...stages[String(level)]];
       const bad = mustNames.filter(n => !resolveName(n));
-      if (bad.length) setTimeout(() => $("warn").textContent = "ไม่พบชื่อ: " + bad.join(", "), 0);
+      const notes = [styleNote, bad.length ? "ไม่พบชื่อ: " + bad.join(", ") : ""].filter(Boolean).join(" · ");
+      if (notes) setTimeout(() => $("warn").textContent = notes, 0);
     } else setTimeout(() => $("warn").textContent =
       "ไม่พบสาย: " + (p.get("style") || p.get("r")) + (routes ? " (มี: " + Object.keys(routes.rules.styles).join(", ") + ")" : ""), 0);
   }
