@@ -221,16 +221,20 @@ function fillAscSelect() {
 function drawAsc() {
   const g = $("ascg"); g.innerHTML = ""; ascById = new Map(); ascAdj = new Map();
   const A = T.asc && T.asc[state.asc];
-  if (!A) return;
   const k = ASC_SCALE, r = 1500 * k;
-  if (A.art) {
-    const [href, x, y, w, h, W, H] = A.art;
+  // no Ascendancy picked: show the base class art (frame Class0 = top-left 1500x1500 of every class sheet)
+  const base = !A && ascList().map(a => T.asc[a].art).find(Boolean);
+  const art = A ? A.art : base && [base[0], 0, 0, 1500, 1500, base[5], base[6]];
+  if (art) {
+    const [href, x, y, w, h, W, H] = art;
     g.appendChild(sprite(href, [W, H], [x, y, w, h], 0, 0, 2 * r));
   }
+  if (!art) return;
   const dim = document.createElementNS(NS, "circle");  // darken the art so nodes stand out
-  dim.setAttribute("r", r); dim.setAttribute("fill", "#000"); dim.setAttribute("fill-opacity", ".35");
+  dim.setAttribute("r", r); dim.setAttribute("fill", "#000"); dim.setAttribute("fill-opacity", A ? ".35" : ".15");
   dim.setAttribute("stroke", "#5a4422"); dim.setAttribute("stroke-width", 16);
   g.appendChild(dim);
+  if (!A) return;
   for (const n of A.nodes) { ascById.set(n.id, { ...n, x: n.x * k, y: n.y * k }); ascAdj.set(n.id, []); }
   const ge = document.createElementNS(NS, "g"); ge.setAttribute("id", "ascE"); g.appendChild(ge);
   for (const [a, b] of A.edges) {
@@ -308,6 +312,7 @@ function paintAsc() {
 // ---- Build panel (?build=<Ascendancy>): skills / supports / items per level range ----
 // skill=, sup=, item= (names split by |) override what builds.json says.
 let override = {};
+let flashMsg = "";  // one-off note (e.g. "not enough points") shown on the next update()
 function buildPanel() {
   const b = state.build && builds && builds.builds[state.build];
   if (!b) { $("build").innerHTML = ""; return; }
@@ -420,6 +425,7 @@ function update(fit) {
   buildPanel();
   const gl = $("labels"); gl.innerHTML = "";
   for (const id of state.targets) {
+    if (!"nkj".includes(byId.get(id).t)) continue;  // small/attribute picks stay unlabelled
     const n = byId.get(id), t = document.createElementNS(NS, "text");
     t.setAttribute("x", n.x); t.setAttribute("y", n.y - R[n.t] - 40);
     t.setAttribute("text-anchor", "middle"); t.setAttribute("fill", "#ffd2bd");
@@ -433,7 +439,8 @@ function update(fit) {
     : `เหลือ ${budget - used} แต้ม ไว้ลง Small passive / Attribute รอบ ๆ เส้นทาง`;
   $("chips").innerHTML = state.targets.map(id =>
     `<span class="chip">${esc(byId.get(id).n)}<b data-rm="${id}" title="ลบ">✕</b></span>`).join("");
-  $("warn").textContent = unreachable.length ? "ไปไม่ถึง: " + unreachable.map(i => byId.get(i).n).join(", ") : "";
+  $("warn").textContent = unreachable.length ? "ไปไม่ถึง: " + unreachable.map(i => byId.get(i).n).join(", ") : flashMsg;
+  flashMsg = "";
   const picks = [...allocated].map(i => byId.get(i)).filter(n => "nkj".includes(n.t));
   $("list").innerHTML = picks.map(n => `<div class="item" data-go="${n.id}"><div class="nm ${n.t}">${esc(n.n)}${n.t === "k" ? " · Keystone" : ""}</div>` +
     `<div class="st">${n.s.map(esc).join("<br>")}</div></div>`).join("");
@@ -633,8 +640,9 @@ async function readUrl() {
   $("asc").value = state.asc;
   drawAsc();
   const an = decodeIds(p.get("an") || "").filter(id => ascById.has(id));
-  state.ascAuto = !an.length;
-  state.ascTargets = an.length ? an : autoAscTargets();
+  // popular picks are filled in only for a build link; a plain asc= link starts empty
+  state.ascAuto = !an.length && !p.has("an") && !!state.asc && state.build === state.asc;
+  state.ascTargets = state.ascAuto ? autoAscTargets() : an;
   if (usedRoute) return;
   const bad = [];
   for (const nm of (p.get("targets") || "").split("|").filter(Boolean)) {
@@ -685,8 +693,9 @@ $("asc").onchange = e => {
   // on a build page, another Ascendancy opens that Ascendancy's own build
   if (state.build && builds.builds[v]) { location.search = `?build=${encodeURIComponent(v)}&level=${state.level || 85}`; return; }
   if (state.build) state.build = null;
+  // a newly picked Ascendancy starts empty; the player clicks its nodes
   state.asc = v; drawAsc();
-  state.ascAuto = true; state.ascTargets = autoAscTargets();
+  state.ascAuto = false; state.ascTargets = [];
   update(true);
 };
 $("build").onclick = e => {
@@ -703,7 +712,7 @@ $("lvl").onchange = e => {
 };
 $("q").onchange = e => {
   const id = resolveName(e.target.value);
-  if (id && !state.targets.includes(id)) { state.targets.push(id); update(true); }
+  if (id && !state.targets.includes(id)) { tryAdd(id); update(true); }
   else if (!id) $("warn").textContent = "ไม่พบชื่อ: " + e.target.value;
   e.target.value = "";
 };
@@ -715,7 +724,11 @@ $("list").onclick = e => {
   const it = e.target.closest("[data-go]");
   if (it) { fitTo([+it.dataset.go], 2500); setView(); }
 };
-$("clear").onclick = () => { state.targets = []; update(true); };
+// clear = empty main tree and Ascendancy (the chosen class / Ascendancy / level stay)
+$("clear").onclick = () => {
+  state.targets = []; state.route = null; state.ascTargets = []; state.ascAuto = false;
+  state.build = null; override = {}; update(true);
+};
 $("fit").onclick = () => { update(true); };
 $("copy").onclick = async () => {
   try { await navigator.clipboard.writeText(location.href); $("copy").textContent = "คัดลอกแล้ว"; }
@@ -723,11 +736,25 @@ $("copy").onclick = async () => {
   setTimeout(() => $("copy").textContent = "คัดลอกลิงก์", 1500);
 };
 
-// Click a notable/keystone on the tree to toggle it as a target.
+// Adding a node is refused when the path to it would go over the level's point budget.
+function tryAdd(id) {
+  const prev = [...state.targets];
+  state.targets.push(id);
+  solve();
+  const used = allocated.size - 1, budget = budgetFor(state.level);
+  if (budget && used > budget) {
+    state.targets = prev;
+    flashMsg = `แต้มไม่พอ: ต้องใช้ ${used} แต้ม แต่ Level ${state.level} มี ${budget} แต้ม (ลบ node อื่นก่อน หรือเพิ่มเลเวล)`;
+    return false;
+  }
+  return true;
+}
+// Click any node (small, attribute, notable, keystone, jewel) to toggle it as a target.
 const toggleNode = e => {
   const n = byId.get(+e.target.dataset.id);
-  if (!n || !"nkj".includes(n.t)) return;
-  state.targets = state.targets.includes(n.id) ? state.targets.filter(t => t !== n.id) : [...state.targets, n.id];
+  if (!n || n.t === "c") return;
+  if (state.targets.includes(n.id)) state.targets = state.targets.filter(t => t !== n.id);
+  else tryAdd(n.id);
   update(false);
 };
 
@@ -777,7 +804,13 @@ svg.addEventListener("pointerup", e => {
       const n = ascById.get(+el.dataset.aid);
       if (n && n.t !== "c") {
         state.ascAuto = false;
-        state.ascTargets = state.ascTargets.includes(n.id) ? state.ascTargets.filter(t => t !== n.id) : [...state.ascTargets, n.id];
+        if (state.ascTargets.includes(n.id)) state.ascTargets = state.ascTargets.filter(t => t !== n.id);
+        else {
+          const need = solveAscFor([...state.ascTargets, n.id]).size - 1, budget = ascBudget(state.level);
+          if (need > budget) flashMsg = `แต้ม Ascendancy ไม่พอ: ต้องใช้ ${need} แต้ม แต่มี ${budget} แต้ม` +
+            (state.level && state.level < 85 ? ` ตอน Level ${state.level}` : "");
+          else state.ascTargets = [...state.ascTargets, n.id];
+        }
         update(false);
       }
     }
