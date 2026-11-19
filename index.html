@@ -46,6 +46,16 @@
     border-radius: 8px; padding: 8px 10px; font-size: 12px; color: var(--muted); }
   .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin: 0 4px 0 10px; vertical-align: -1px; }
   .legend i:first-child { margin-left: 0; }
+  .build:empty { display: none; }
+  .build { margin-top: 14px; border: 1px solid #5a4422; background: #1a150d; border-radius: 8px; padding: 10px 12px; }
+  .build h2 { font-size: 15px; margin: 0 0 2px; color: var(--alloc); }
+  .build .src { color: var(--muted); font-size: 11px; margin-bottom: 6px; }
+  .build .stage { color: #ffd9a0; font-weight: 600; margin: 8px 0 2px; }
+  .build dl { margin: 0; display: grid; grid-template-columns: 74px 1fr; gap: 3px 8px; font-size: 12.5px; }
+  .build dt { color: var(--muted); } .build dd { margin: 0; }
+  .build .tabs { display: flex; gap: 6px; margin-top: 6px; }
+  .build .tabs button { padding: 3px 8px; font-size: 12px; }
+  .build .tabs button.on { background: var(--alloc); color: #1a1205; border-color: var(--alloc); }
   @media (max-width: 760px) {
     .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
     aside { max-height: 46vh; border-right: 0; border-bottom: 1px solid var(--line); }
@@ -60,6 +70,12 @@
 
     <label for="cls">คลาส</label>
     <select id="cls"></select>
+
+    <label for="asc">Ascendancy (วงกลางผัง)</label>
+    <select id="asc"></select>
+    <div class="stat"><span>แต้ม Ascendancy</span><strong id="apts">0</strong></div>
+
+    <div class="build" id="build"></div>
 
     <label for="q">เพิ่ม Notable / Keystone ที่อยากได้</label>
     <input id="q" list="names" placeholder="พิมพ์ชื่อ เช่น Heavy Buffer">
@@ -85,7 +101,7 @@
     <div class="list" id="list"></div>
   </aside>
   <main>
-    <svg id="svg"><g id="edges"></g><g id="nodes"></g><g id="icons" pointer-events="none"></g><g id="labels"></g></svg>
+    <svg id="svg"><g id="ascg"></g><g id="edges"></g><g id="nodes"></g><g id="icons" pointer-events="none"></g><g id="labels" pointer-events="none"></g></svg>
     <div class="tip" id="tip"></div>
     <div class="legend"><i style="background:var(--alloc)"></i>เส้นทางที่อัพ<i style="background:var(--target)"></i>เป้าหมาย<i style="background:var(--keystone)"></i>Keystone<i style="background:var(--start)"></i>จุดเริ่มคลาส</div>
   </main>
@@ -94,7 +110,9 @@
 const NS = "http://www.w3.org/2000/svg";
 const $ = id => document.getElementById(id);
 let T, byId = new Map(), adj = new Map(), starts = new Map(), nameIdx = new Map();
-let state = { cls: "Warrior", targets: [] };      // targets: node ids
+let state = { cls: "Warrior", targets: [], asc: "", ascTargets: [], ascAuto: false, build: null };  // targets: node ids
+let builds = null, ascById = new Map(), ascAdj = new Map(), ascAlloc = new Set(), ascEdges = new Set();
+const ASC_SCALE = 0.9;  // the Ascendancy art is 3000 units across; this keeps it inside the class-start ring
 let view = { x: 0, y: 0, w: 1, h: 1 };
 let allocated = new Set(), allocEdges = new Set();
 
@@ -116,6 +134,7 @@ async function load() {
   }
   $("names").innerHTML = [...new Set(T.nodes.filter(n => "nkj".includes(n.t)).map(n => n.n))]
     .sort().map(n => `<option value="${esc(n)}">`).join("");
+  try { builds = await (await fetch("builds.json", { cache: "no-cache" })).json(); } catch { builds = null; }
   drawBase();
   await readUrl();
   update(true);
@@ -188,6 +207,133 @@ function drawBase() {
   drawIcons();
   const [x0, y0, x1, y1] = T.bounds;
   view = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+// ---- Ascendancy (drawn in the empty centre circle, like in game) ----
+// Points: 2 per Ascendancy trial. Roughly 2 by level 30, 4 by 60 and all 8 by 85.
+function ascBudget(level) { return !level ? 8 : level <= 30 ? 2 : level <= 60 ? 4 : 8; }
+function ascList() { return Object.keys(T.asc || {}).filter(a => T.asc[a].cls === state.cls); }
+function fillAscSelect() {
+  $("asc").innerHTML = `<option value="">ไม่เลือก</option>` +
+    ascList().map(a => `<option${builds && builds.builds[a] && builds.builds[a].top ? ` label="${esc(a)} ★"` : ""}>${esc(a)}</option>`).join("");
+  $("asc").value = state.asc;
+}
+function drawAsc() {
+  const g = $("ascg"); g.innerHTML = ""; ascById = new Map(); ascAdj = new Map();
+  const A = T.asc && T.asc[state.asc];
+  if (!A) return;
+  const k = ASC_SCALE, r = 1500 * k;
+  if (A.art) {
+    const [href, x, y, w, h, W, H] = A.art;
+    g.appendChild(sprite(href, [W, H], [x, y, w, h], 0, 0, 2 * r));
+  }
+  const dim = document.createElementNS(NS, "circle");  // darken the art so nodes stand out
+  dim.setAttribute("r", r); dim.setAttribute("fill", "#000"); dim.setAttribute("fill-opacity", ".35");
+  dim.setAttribute("stroke", "#5a4422"); dim.setAttribute("stroke-width", 16);
+  g.appendChild(dim);
+  for (const n of A.nodes) { ascById.set(n.id, { ...n, x: n.x * k, y: n.y * k }); ascAdj.set(n.id, []); }
+  const ge = document.createElementNS(NS, "g"); ge.setAttribute("id", "ascE"); g.appendChild(ge);
+  for (const [a, b] of A.edges) {
+    ascAdj.get(a).push(b); ascAdj.get(b).push(a);
+    const A1 = ascById.get(a), B1 = ascById.get(b), p = document.createElementNS(NS, "path");
+    p.setAttribute("d", `M${A1.x},${A1.y}L${B1.x},${B1.y}`); p.dataset.k = edgeKey(a, b);
+    ge.appendChild(p);
+  }
+  const gn = document.createElementNS(NS, "g"); gn.setAttribute("id", "ascN"); g.appendChild(gn);
+  const S = T.sprites;
+  for (const n of ascById.values()) {
+    const rr = n.t === "c" ? 60 : n.t === "n" ? 58 : 36;
+    const c = document.createElementNS(NS, "circle");
+    c.setAttribute("cx", n.x); c.setAttribute("cy", n.y); c.setAttribute("r", rr); c.dataset.aid = n.id;
+    gn.appendChild(c);
+    if (S && S.frames.an && (n.ic || n.t === "c")) {
+      const ic = n.ic && sprite("assets/skills-disabled.webp", S.skills, n.ic, n.x, n.y, rr * 1.9);
+      const fr = sprite("assets/frame.webp", S.frame, S.frames["a" + n.t][0], n.x, n.y, rr * 2.7);
+      for (const el of [ic, fr]) if (el) { el.setAttribute("pointer-events", "none"); gn.appendChild(el); }
+      n.icEl = ic; n.frEl = fr;
+    }
+  }
+}
+// default picks for a build: its most played Ascendancy passives, in order, while the points last
+function autoAscTargets() {
+  const b = builds && builds.builds[state.asc], A = T.asc && T.asc[state.asc];
+  if (!b || !A) return [];
+  const byName = new Map(A.nodes.map(n => [n.n.toLowerCase(), n.id]));
+  const budget = ascBudget(state.level), out = [];
+  // Abyssal Lich shares Lich's nodes and has no picks of its own in the snapshot
+  const names = b.asc.length ? b.asc : ((A.sameAs && builds.builds[A.sameAs]) || { asc: [] }).asc;
+  for (const nm of names) {
+    const id = byName.get(nm.toLowerCase());
+    if (!id) continue;
+    const trial = solveAscFor([...out, id]);
+    if (trial.size - 1 <= budget) out.push(id);
+  }
+  return out;
+}
+function solveAscFor(targets) {
+  const A = T.asc && T.asc[state.asc];
+  const alloc = new Set(A ? [A.start] : []);
+  if (!A) return alloc;
+  for (const t of targets) {
+    const prev = new Map([...alloc].map(s => [s, null])), q = [...alloc];
+    for (let i = 0; i < q.length && !prev.has(t); i++)
+      for (const v of ascAdj.get(q[i]) || []) if (!prev.has(v)) { prev.set(v, q[i]); q.push(v); }
+    if (prev.has(t)) for (let v = t; v !== null; v = prev.get(v)) alloc.add(v);
+  }
+  return alloc;
+}
+function paintAsc() {
+  const A = T.asc && T.asc[state.asc], S = T.sprites;
+  ascAlloc = A ? solveAscFor(state.ascTargets) : new Set();
+  ascEdges = new Set();
+  if (A) for (const [a, b] of A.edges) if (ascAlloc.has(a) && ascAlloc.has(b)) ascEdges.add(edgeKey(a, b));
+  const ge = $("ascE"), gn = $("ascN");
+  if (ge) for (const p of ge.children) {
+    const on = ascEdges.has(p.dataset.k);
+    p.setAttribute("stroke", on ? "var(--alloc-edge)" : "#6b5a3a"); p.setAttribute("stroke-width", on ? 30 : 12);
+  }
+  if (gn) for (const c of gn.querySelectorAll("circle")) {
+    const n = ascById.get(+c.dataset.aid), on = ascAlloc.has(n.id);
+    c.setAttribute("fill", n.t === "c" ? "var(--start)" : on ? "var(--alloc)" : "#2a2418");
+    if (S && n.frEl) {
+      if (n.icEl) n.icEl.firstChild.setAttribute("href", on ? "assets/skills.webp" : "assets/skills-disabled.webp");
+      n.frEl.setAttribute("viewBox", S.frames["a" + n.t][on ? 1 : 0].join(" "));
+    }
+  }
+  const used = Math.max(0, ascAlloc.size - 1), budget = ascBudget(state.level);
+  $("apts").textContent = A ? `${used} / ${budget}` : "-";
+  $("apts").style.color = used > budget ? "#ff9d7a" : "";
+}
+
+// ---- Build panel (?build=<Ascendancy>): skills / supports / items per level range ----
+// skill=, sup=, item= (names split by |) override what builds.json says.
+let override = {};
+function buildPanel() {
+  const b = state.build && builds && builds.builds[state.build];
+  if (!b) { $("build").innerHTML = ""; return; }
+  const L = state.level || 85, list = a => a && a.length ? a.map(esc).join(", ") : "-";
+  const main = override.skill ? override.skill[0] : b.main;
+  const sup = override.sup || (L <= 30 ? b.earlySup : b.sup);
+  const items = override.item || [...b.uniques, ...b.weapon];
+  const lvOf = n => b.req && b.req[n] ? ` (Lv ${b.req[n]})` : "";
+  let skill;
+  if (override.skill) skill = list(override.skill);
+  else if (L <= 30) skill = b.early ? `${esc(b.early)}${lvOf(b.early)} ไปก่อน แล้วเปลี่ยนเป็น ${esc(b.main)} ตอน Lv ${b.mainLv}` : esc(b.main) + lvOf(b.main);
+  else skill = esc(main) + (b.second ? ` + ${esc(b.second)}` : "");
+  const stage = L <= 30 ? "Level 1-30" : L <= 60 ? "Level 31-60" : "Level 60-85";
+  const tip = L <= 30 ? "เน้นเคลียร์ด่าน: Notable ใกล้จุดเริ่มก่อน" :
+    L <= 60 ? "เริ่มไป Notable ไกลขึ้น (รีเซ็ตแต้มจัดใหม่ได้)" : "Endgame: เน้น Notable ไกล ๆ ที่แรงที่สุดของสาย + ป้องกัน";
+  $("build").innerHTML = `<h2>Build ${esc(state.build)}${b.top ? " ★" : ""}</h2>
+    <div class="src">${esc(b.class)} · สาย ${esc(b.style)} · ${esc(builds.league)} · ผู้เล่น ${esc(b.users)} คน</div>
+    <div class="tabs">${[30, 60, 85].map(v => `<button data-lv="${v}" class="${v === L ? "on" : ""}">${v === 30 ? "1-30" : v === 60 ? "31-60" : "60-85"}</button>`).join("")}</div>
+    <div class="stage">${stage}</div><div class="src">${tip}</div>
+    <dl><dt>สกิล</dt><dd>${skill}</dd>
+    <dt>Support</dt><dd>${list(sup)}</dd>
+    ${b.granted.length ? `<dt>สกิลอื่น</dt><dd>${list(b.granted)}</dd>` : ""}
+    <dt>Spirit</dt><dd>${list(b.spirit)}</dd>
+    <dt>Ascendancy</dt><dd>${list(state.ascTargets.map(id => ascById.get(id)?.n).filter(Boolean))}</dd>
+    <dt>Keystone</dt><dd>${list(b.keystone)}</dd>
+    <dt>ไอเทม</dt><dd>${list(items)}</dd></dl>`;
 }
 
 // Shortest path from the allocated set to one node (BFS; other class starts are walls).
@@ -270,13 +416,14 @@ function update(fit) {
     c.setAttribute("stroke-width", n.t === "k" || n.t === "n" ? 10 : 0);
   }
   paintIcons();
+  paintAsc();
+  buildPanel();
   const gl = $("labels"); gl.innerHTML = "";
   for (const id of state.targets) {
     const n = byId.get(id), t = document.createElementNS(NS, "text");
     t.setAttribute("x", n.x); t.setAttribute("y", n.y - R[n.t] - 40);
     t.setAttribute("text-anchor", "middle"); t.setAttribute("fill", "#ffd2bd");
-    t.setAttribute("font-size", 170); t.setAttribute("paint-order", "stroke");
-    t.setAttribute("stroke", "#0b0d10"); t.setAttribute("stroke-width", 40);
+    t.setAttribute("paint-order", "stroke"); t.setAttribute("stroke", "#0b0d10");
     t.textContent = n.n; gl.appendChild(t);
   }
   const used = Math.max(0, allocated.size - 1), budget = budgetFor(state.level);
@@ -291,12 +438,15 @@ function update(fit) {
   $("list").innerHTML = picks.map(n => `<div class="item" data-go="${n.id}"><div class="nm ${n.t}">${esc(n.n)}${n.t === "k" ? " · Keystone" : ""}</div>` +
     `<div class="st">${n.s.map(esc).join("<br>")}</div></div>`).join("");
   writeUrl();
-  if (fit) fitTo(allocated.size > 1 ? [...allocated] : [start], allocated.size > 1 ? 1200 : 6000);
+  // keep the Ascendancy circle in view too when one is picked
+  const ascBox = state.asc ? [[-1400, -1400], [1400, 1400]] : [];
+  if (fit) fitTo(allocated.size > 1 ? [...allocated] : [start], allocated.size > 1 ? 1200 : 6000, ascBox);
   setView();
 }
 
-function fitTo(ids, pad) {
-  const xs = ids.map(i => byId.get(i).x), ys = ids.map(i => byId.get(i).y);
+function fitTo(ids, pad, extra = []) {
+  const xs = ids.map(i => byId.get(i).x).concat(extra.map(p => p[0]));
+  const ys = ids.map(i => byId.get(i).y).concat(extra.map(p => p[1]));
   const x0 = Math.min(...xs) - pad, x1 = Math.max(...xs) + pad, y0 = Math.min(...ys) - pad, y1 = Math.max(...ys) + pad;
   const box = $("svg").getBoundingClientRect();
   const ar = box.width > 0 && box.height > 0 ? box.width / box.height : 1;
@@ -304,7 +454,14 @@ function fitTo(ids, pad) {
   if (w / h < ar) w = h * ar; else h = w / ar;
   view = { x: (x0 + x1 - w) / 2, y: (y0 + y1 - h) / 2, w, h };
 }
-function setView() { $("svg").setAttribute("viewBox", `${view.x} ${view.y} ${view.w} ${view.h}`); }
+// labels keep roughly the same on-screen size at any zoom (they used to cover nodes when zoomed in)
+function setView() {
+  $("svg").setAttribute("viewBox", `${view.x} ${view.y} ${view.w} ${view.h}`);
+  const fs = Math.max(30, Math.min(170, view.w / 110));
+  const gl = $("labels");
+  gl.setAttribute("font-size", fs);
+  gl.setAttribute("stroke-width", fs * 0.22);
+}
 
 // Short links. ?t= packs node ids as big-endian uint16 then base64url (same idea as
 // GGG's own tree links); ?r= is the older name for a ready-made route.
@@ -342,12 +499,19 @@ function computeRoute(cls, style, must = []) {
     if (main.test(text)) cands.push([n.id, 1]);
     else if (def.test(text)) cands.push([n.id, R.weight]);
   }
-  const alloc = new Set([start]), ids = [], stages = {};
-  for (const m of must) {
-    const path = bfsFrom([...alloc].sort((a, b) => a - b), m, true);
-    if (path) { path.forEach(v => alloc.add(v)); ids.push(m); }
-  }
+  // distance from the class start, for the "far notables" bonus (same as export_tree_routes.py)
+  const d0 = new Map([[start, 0]]), q0 = [start];
+  for (let i = 0; i < q0.length; i++)
+    for (const v of sadj.get(q0[i])) if (!d0.has(v) && !walls.has(v)) { d0.set(v, d0.get(q0[i]) + 1); q0.push(v); }
+  const dmax = Math.max(1, ...cands.map(([c]) => d0.get(c) || 0));
+  const stages = {};
+  // every level range is its own tree (respec between ranges); must-have nodes go in first
   for (const [level, budget] of R.stages) {
+    const alloc = new Set([start]), ids = [], far = (R.far || {})[String(level)] || 0;
+    for (const m of must) {
+      const path = bfsFrom([...alloc].sort((a, b) => a - b), m, true);
+      if (path) { path.forEach(v => alloc.add(v)); ids.push(m); }
+    }
     for (;;) {
       const order = [...alloc].sort((a, b) => a - b), prev = new Map(order.map(s => [s, null]));
       for (let i = 0; i < order.length; i++)
@@ -358,7 +522,7 @@ function computeRoute(cls, style, must = []) {
         const path = [];
         for (let v = c; !alloc.has(v); v = prev.get(v)) path.push(v);
         if (alloc.size - 1 + path.length > budget) continue;
-        const score = path.length * w;
+        const score = path.length * w / (1 + far * (d0.get(c) || 0) / dmax);
         if (!best || score < best[0]) best = [score, c, path];
       }
       if (!best) break;
@@ -416,6 +580,21 @@ function onRoute() {
 async function readUrl() {
   const p = new URLSearchParams(location.search);
   let usedRoute = false;
+  // ?build=<Ascendancy>&level=N: class, style and Ascendancy picks come from builds.json
+  if (p.get("build")) {
+    const want = p.get("build").trim().toLowerCase();
+    const key = builds && Object.keys(builds.builds).find(k => k.toLowerCase() === want);
+    if (key) {
+      const b = builds.builds[key];
+      state.build = key;
+      p.set("class", b.class);
+      if (!p.get("style") && !p.get("t") && !p.get("nodes")) p.set("style", b.style);
+      if (!p.get("asc")) p.set("asc", key);
+    } else setTimeout(() => $("warn").textContent = "ไม่พบ Build: " + p.get("build"), 0);
+  }
+  override = {};
+  for (const k of ["skill", "sup", "item"])
+    if (p.get(k)) override[k] = p.get(k).split("|").map(s => s.trim()).filter(Boolean);
   if (p.get("r") || p.get("style")) {
     try { routes = await (await fetch("routes.json", { cache: "no-cache" })).json(); } catch { routes = null; }
     let cls = p.get("class"), style = normStyle(p.get("style"), p.get("class"));
@@ -447,6 +626,15 @@ async function readUrl() {
   if (state.level && ![...$("lvl").options].some(o => +o.value === state.level))
     $("lvl").add(new Option(`Level ${state.level} (~${budgetFor(state.level)} แต้ม)`, state.level));
   $("lvl").value = state.level || "";
+  // Ascendancy: asc=<name>, an=<base64 ids> (no an = the build's most played picks)
+  fillAscSelect();
+  const a = (p.get("asc") || "").trim().toLowerCase();
+  state.asc = ascList().find(x => x.toLowerCase() === a) || "";
+  $("asc").value = state.asc;
+  drawAsc();
+  const an = decodeIds(p.get("an") || "").filter(id => ascById.has(id));
+  state.ascAuto = !an.length;
+  state.ascTargets = an.length ? an : autoAscTargets();
   if (usedRoute) return;
   const bad = [];
   for (const nm of (p.get("targets") || "").split("|").filter(Boolean)) {
@@ -472,14 +660,43 @@ function writeUrl() {
     if (state.level) p.set("level", state.level);
     if (state.targets.length) p.set("t", encodeIds(state.targets));
   }
+  if (state.build) {
+    // untouched build = the short link the bot hands out
+    if (onRoute()) p = new URLSearchParams({ build: state.build, level: state.level });
+    else p.set("build", state.build);
+  }
+  for (const k of ["skill", "sup", "item"]) if (override[k]) p.set(k, override[k].join("|"));
+  if (state.asc && !(state.build === state.asc && state.ascAuto)) {
+    p.set("asc", state.asc);
+    if (!state.ascAuto) p.set("an", encodeIds(state.ascTargets));
+  }
   history.replaceState(null, "", "?" + p.toString());
 }
 
 // UI events
-$("cls").onchange = e => { state.cls = e.target.value; update(true); };
+// a new class starts from an empty tree (old targets belonged to the other class's area)
+$("cls").onchange = e => {
+  state.cls = e.target.value; state.targets = []; state.route = null;
+  state.build = null; override = {}; state.asc = ""; state.ascTargets = [];
+  fillAscSelect(); drawAsc(); update(true);
+};
+$("asc").onchange = e => {
+  const v = e.target.value;
+  // on a build page, another Ascendancy opens that Ascendancy's own build
+  if (state.build && builds.builds[v]) { location.search = `?build=${encodeURIComponent(v)}&level=${state.level || 85}`; return; }
+  if (state.build) state.build = null;
+  state.asc = v; drawAsc();
+  state.ascAuto = true; state.ascTargets = autoAscTargets();
+  update(true);
+};
+$("build").onclick = e => {
+  const lv = e.target.dataset && e.target.dataset.lv;
+  if (lv) { $("lvl").value = lv; $("lvl").onchange({ target: $("lvl") }); }
+};
 $("lvl").onchange = e => {
   const prevOnRoute = onRoute();
   state.level = +e.target.value || 0;
+  if (state.ascAuto) state.ascTargets = autoAscTargets();
   // on a ready-made route, switching level shows that level range's part of the route
   const st = prevOnRoute && state.route.stages[String(state.level)];
   if (st) { state.targets = [...st]; update(true); } else update(false);
@@ -518,13 +735,27 @@ const toggleNode = e => {
 $("nodes").onmousemove = e => {
   const n = byId.get(+e.target.dataset.id), tip = $("tip");
   if (!n) { tip.style.display = "none"; return; }
-  tip.innerHTML = `<div class="nm">${esc(n.n)}</div>${n.s.map(esc).join("<br>")}`;
+  if (n.t === "c") {  // class start nodes are named "SIX" etc. in the data; show the classes instead
+    const c = T.classes.find(c => c.start === n.id);
+    tip.innerHTML = `<div class="nm">จุดเริ่มคลาส</div>${esc(c ? c.names.join(" / ") : n.n)}`;
+  } else tip.innerHTML = `<div class="nm">${esc(n.n)}</div>${n.s.map(esc).join("<br>")}`;
   const box = $("svg").getBoundingClientRect();
   tip.style.left = Math.min(e.clientX - box.left + 14, box.width - 330) + "px";
   tip.style.top = (e.clientY - box.top + 14) + "px";
   tip.style.display = "block";
 };
 $("nodes").onmouseleave = () => $("tip").style.display = "none";
+$("ascg").onmousemove = e => {
+  const n = ascById.get(+e.target.dataset.aid), tip = $("tip");
+  if (!n) { tip.style.display = "none"; return; }
+  tip.innerHTML = n.t === "c" ? `<div class="nm">จุดเริ่ม ${esc(state.asc)}</div>`
+    : `<div class="nm">${esc(n.n)} · ${esc(state.asc)}</div>${n.s.map(esc).join("<br>")}`;
+  const box = $("svg").getBoundingClientRect();
+  tip.style.left = Math.min(e.clientX - box.left + 14, box.width - 330) + "px";
+  tip.style.top = (e.clientY - box.top + 14) + "px";
+  tip.style.display = "block";
+};
+$("ascg").onmouseleave = () => $("tip").style.display = "none";
 
 // Pan + zoom
 const svg = $("svg");
@@ -542,6 +773,14 @@ svg.addEventListener("pointerup", e => {
   if (drag && !drag.moved) {
     const el = document.elementFromPoint(e.clientX, e.clientY);
     if (el && el.dataset && el.dataset.id) toggleNode({ target: el });
+    else if (el && el.dataset && el.dataset.aid) {
+      const n = ascById.get(+el.dataset.aid);
+      if (n && n.t !== "c") {
+        state.ascAuto = false;
+        state.ascTargets = state.ascTargets.includes(n.id) ? state.ascTargets.filter(t => t !== n.id) : [...state.ascTargets, n.id];
+        update(false);
+      }
+    }
   }
   drag = null;
 });
