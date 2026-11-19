@@ -1,0 +1,539 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PoE2 Tree Planner</title>
+<style>
+  :root {
+    --bg: #0b0d10; --panel: #14181d; --line: #262c34; --text: #d9dde3; --muted: #8a93a0;
+    --node: #3b424c; --edge: #232830; --alloc: #e6ad4a; --alloc-edge: #c8913a;
+    --target: #ff7a45; --keystone: #6aa0ff; --notable: #59606b; --jewel: #3fbf9f; --start: #b07cff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 14px/1.45 system-ui, "Segoe UI", "Noto Sans Thai", sans-serif; }
+  .app { display: grid; grid-template-columns: 320px 1fr; height: 100%; }
+  aside { background: var(--panel); border-right: 1px solid var(--line); padding: 16px; overflow: auto; }
+  h1 { font-size: 17px; margin: 0 0 2px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+  label { display: block; color: var(--muted); font-size: 12px; margin: 12px 0 4px; }
+  select, input, button { width: 100%; background: #0f1216; color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 8px; font: inherit; }
+  button { cursor: pointer; width: auto; }
+  button.primary { background: var(--alloc); color: #1a1205; border: 0; font-weight: 600; }
+  .row { display: flex; gap: 8px; margin-top: 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .chip { background: #2a1c12; border: 1px solid var(--target); color: #ffd2bd; border-radius: 99px;
+    padding: 2px 8px 2px 10px; font-size: 12px; display: flex; gap: 6px; align-items: center; }
+  .chip b { cursor: pointer; color: var(--muted); font-weight: 400; }
+  .stat { display: flex; justify-content: space-between; margin-top: 14px; padding: 10px; border: 1px solid var(--line);
+    border-radius: 8px; }
+  .stat strong { color: var(--alloc); font-size: 18px; }
+  .list { margin-top: 10px; }
+  .item { padding: 8px 0; border-top: 1px solid var(--line); cursor: pointer; }
+  .item .nm { font-weight: 600; }
+  .item .nm.k { color: var(--keystone); } .item .nm.n { color: var(--alloc); } .item .nm.j { color: var(--jewel); }
+  .item .st { color: var(--muted); font-size: 12px; }
+  .warn { color: #ff9d7a; font-size: 12px; margin-top: 8px; }
+  main { position: relative; overflow: hidden; }
+  svg { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+  svg.drag { cursor: grabbing; }
+  .tip { position: absolute; pointer-events: none; background: #0f1216ee; border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 10px; max-width: 320px; font-size: 12px; display: none; }
+  .tip .nm { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+  .legend { position: absolute; right: 12px; bottom: 12px; background: #0f1216cc; border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 10px; font-size: 12px; color: var(--muted); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin: 0 4px 0 10px; vertical-align: -1px; }
+  .legend i:first-child { margin-left: 0; }
+  @media (max-width: 760px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+    aside { max-height: 46vh; border-right: 0; border-bottom: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <h1>PoE2 Tree Planner</h1>
+    <div class="sub" id="ver">กำลังโหลด…</div>
+
+    <label for="cls">คลาส</label>
+    <select id="cls"></select>
+
+    <label for="q">เพิ่ม Notable / Keystone ที่อยากได้</label>
+    <input id="q" list="names" placeholder="พิมพ์ชื่อ เช่น Heavy Buffer">
+    <datalist id="names"></datalist>
+    <div class="chips" id="chips"></div>
+    <div class="warn" id="warn"></div>
+
+    <label for="lvl">เลเวลตัวละคร (คำนวณงบแต้ม)</label>
+    <select id="lvl">
+      <option value="">ไม่กำหนด</option>
+      <option value="30">Level 30 (~36 แต้ม)</option>
+      <option value="60">Level 60 (~81 แต้ม)</option>
+      <option value="85">Level 85 (~108 แต้ม)</option>
+    </select>
+    <div class="stat"><span>แต้ม Passive ที่ใช้</span><strong id="pts">0</strong></div>
+    <div class="warn" id="budget"></div>
+    <div class="row">
+      <button class="primary" id="copy">คัดลอกลิงก์</button>
+      <button id="clear">ล้าง</button>
+      <button id="fit">ซูมพอดี</button>
+    </div>
+
+    <div class="list" id="list"></div>
+  </aside>
+  <main>
+    <svg id="svg"><g id="edges"></g><g id="nodes"></g><g id="icons" pointer-events="none"></g><g id="labels"></g></svg>
+    <div class="tip" id="tip"></div>
+    <div class="legend"><i style="background:var(--alloc)"></i>เส้นทางที่อัพ<i style="background:var(--target)"></i>เป้าหมาย<i style="background:var(--keystone)"></i>Keystone<i style="background:var(--start)"></i>จุดเริ่มคลาส</div>
+  </main>
+</div>
+<script>
+const NS = "http://www.w3.org/2000/svg";
+const $ = id => document.getElementById(id);
+let T, byId = new Map(), adj = new Map(), starts = new Map(), nameIdx = new Map();
+let state = { cls: "Warrior", targets: [] };      // targets: node ids
+let view = { x: 0, y: 0, w: 1, h: 1 };
+let allocated = new Set(), allocEdges = new Set();
+
+const R = { s: 28, a: 34, n: 52, j: 50, k: 78, c: 90 };
+
+async function load() {
+  // no-cache: revalidate so a rebuilt tree.json / routes.json shows up without a hard refresh
+  T = await (await fetch("tree.json", { cache: "no-cache" })).json();
+  $("ver").textContent = `Passive tree ${T.version} · ข้อมูลจาก ${T.source}`;
+  for (const n of T.nodes) { byId.set(n.id, n); adj.set(n.id, []); }
+  for (const [a, b] of T.edges) { adj.get(a).push(b); adj.get(b).push(a); }
+  for (const c of T.classes) for (const nm of c.names) starts.set(nm, c.start);
+  const clsNames = Object.keys(T.ascendancies).filter(n => starts.has(n));
+  $("cls").innerHTML = clsNames.map(n => `<option>${n}</option>`).join("");
+  for (const n of T.nodes) if ("nkj".includes(n.t)) {
+    const key = n.n.toLowerCase();
+    if (!nameIdx.has(key)) nameIdx.set(key, []);
+    nameIdx.get(key).push(n.id);
+  }
+  $("names").innerHTML = [...new Set(T.nodes.filter(n => "nkj".includes(n.t)).map(n => n.n))]
+    .sort().map(n => `<option value="${esc(n)}">`).join("");
+  drawBase();
+  await readUrl();
+  update(true);
+}
+
+function esc(s) { return s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+function edgeKey(a, b) { return a < b ? a + "-" + b : b + "-" + a; }
+
+function edgePath(e) {
+  const A = byId.get(e[0]), B = byId.get(e[1]);
+  if (!e[2]) return `M${A.x},${A.y}L${B.x},${B.y}`;
+  const [cx, cy, r] = e[2];
+  let d = Math.atan2(B.y - cy, B.x - cx) - Math.atan2(A.y - cy, A.x - cx);
+  while (d <= -Math.PI) d += 2 * Math.PI;
+  while (d > Math.PI) d -= 2 * Math.PI;
+  return `M${A.x},${A.y}A${r},${r} 0 0 ${d > 0 ? 1 : 0} ${B.x},${B.y}`;
+}
+
+// Notable/Keystone art from GGG's tree export (tree.json "sprites" + node "ic" rects).
+// Each icon is a nested <svg> whose viewBox crops the sprite sheet; the frame ring sits on top.
+const icons = new Map();  // node id -> { img, frame }
+function sprite(href, size, rect, cx, cy, d) {
+  const s = document.createElementNS(NS, "svg");
+  s.setAttribute("x", cx - d / 2); s.setAttribute("y", cy - d / 2);
+  s.setAttribute("width", d); s.setAttribute("height", d);
+  s.setAttribute("viewBox", rect.join(" "));
+  const im = document.createElementNS(NS, "image");
+  im.setAttribute("href", href); im.setAttribute("width", size[0]); im.setAttribute("height", size[1]);
+  s.appendChild(im);
+  return s;
+}
+function drawIcons() {
+  const S = T.sprites;
+  if (!S) return;
+  const g = $("icons");
+  for (const n of T.nodes) {
+    if (!n.ic) continue;
+    const icon = sprite("assets/skills-disabled.webp", S.skills, n.ic, n.x, n.y, R[n.t] * 1.9);
+    const frame = sprite("assets/frame.webp", S.frame, S.frames[n.t][0], n.x, n.y, R[n.t] * (n.t === "k" ? 2.9 : 2.7));
+    g.appendChild(icon); g.appendChild(frame);
+    icons.set(n.id, { img: icon.firstChild, frame });
+  }
+}
+function paintIcons() {
+  const S = T.sprites;
+  if (!S) return;
+  for (const [id, ic] of icons) {
+    const on = allocated.has(id), t = byId.get(id).t;
+    ic.img.setAttribute("href", on ? "assets/skills.webp" : "assets/skills-disabled.webp");
+    ic.frame.setAttribute("viewBox", S.frames[t][on ? 1 : 0].join(" "));
+  }
+}
+
+function drawBase() {
+  const ge = $("edges"), gn = $("nodes");
+  for (const e of T.edges) {
+    const p = document.createElementNS(NS, "path");
+    p.setAttribute("d", edgePath(e));
+    p.dataset.k = edgeKey(e[0], e[1]);
+    ge.appendChild(p);
+  }
+  for (const n of T.nodes) {
+    const c = document.createElementNS(NS, "circle");
+    c.setAttribute("cx", n.x); c.setAttribute("cy", n.y); c.setAttribute("r", R[n.t]);
+    c.dataset.id = n.id;
+    gn.appendChild(c);
+  }
+  ge.setAttribute("fill", "none");
+  drawIcons();
+  const [x0, y0, x1, y1] = T.bounds;
+  view = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+// Shortest path from the allocated set to one node (BFS; other class starts are walls).
+function bfsFrom(sources, goal, sorted) {
+  const prev = new Map(), q = [];
+  const next = sorted ? u => [...adj.get(u)].sort((a, b) => a - b) : u => adj.get(u);
+  for (const s of sources) { prev.set(s, null); q.push(s); }
+  const walls = new Set([...starts.values()].filter(id => id !== starts.get(state.cls)));
+  for (let i = 0; i < q.length; i++) {
+    const u = q[i];
+    if (u === goal) {
+      const path = [];
+      for (let v = u; v !== null; v = prev.get(v)) path.push(v);
+      return path.reverse();
+    }
+    for (const v of next(u)) if (!prev.has(v) && !walls.has(v)) { prev.set(v, u); q.push(v); }
+  }
+  return null;
+}
+
+// Greedy Steiner tree: keep linking the closest unreached target to what is already allocated.
+// On a ready-made route the targets are linked in route order with sorted BFS, which
+// rebuilds exactly the paths export_tree_routes.py counted (so the budget matches).
+function solve() {
+  const start = starts.get(state.cls), inOrder = onRoute();
+  allocated = new Set([start]); allocEdges = new Set();
+  const left = [...state.targets], unreachable = [];
+  while (left.length) {
+    let best = null, bi = -1;
+    if (inOrder) { best = bfsFrom([...allocated].sort((a, b) => a - b), left[0], true); bi = 0; }
+    else left.forEach((t, i) => {
+      const p = bfsFrom(allocated, t);
+      if (p && (!best || p.length < best.length)) { best = p; bi = i; }
+    });
+    if (!best) { unreachable.push(...left); break; }
+    for (let i = 0; i < best.length; i++) {
+      allocated.add(best[i]);
+      if (i) allocEdges.add(edgeKey(best[i - 1], best[i]));
+    }
+    left.splice(bi, 1);
+  }
+  return unreachable;
+}
+
+// Pick the instance of a name nearest to the class start (some notables repeat).
+function resolveName(name) {
+  const ids = nameIdx.get(name.trim().toLowerCase());
+  if (!ids) return null;
+  if (ids.length === 1) return ids[0];
+  const s = byId.get(starts.get(state.cls));
+  return ids.reduce((a, b) => {
+    const A = byId.get(a), B = byId.get(b);
+    return Math.hypot(A.x - s.x, A.y - s.y) <= Math.hypot(B.x - s.x, B.y - s.y) ? a : b;
+  });
+}
+
+// Points at a level: 1 per level after 1, plus quest books (24 in all by the end of
+// the campaign; roughly 7 by level 30 and 22 by level 60).
+function budgetFor(level) {
+  if (!level) return 0;
+  const quest = level <= 30 ? 7 : level <= 60 ? 22 : 24;
+  return level - 1 + quest;
+}
+
+function update(fit) {
+  const unreachable = solve();
+  const start = starts.get(state.cls), tset = new Set(state.targets);
+  for (const p of $("edges").children) {
+    const on = allocEdges.has(p.dataset.k);
+    p.setAttribute("stroke", on ? "var(--alloc-edge)" : "var(--edge)");
+    p.setAttribute("stroke-width", on ? 34 : 14);
+  }
+  for (const c of $("nodes").children) {
+    const n = byId.get(+c.dataset.id), on = allocated.has(n.id);
+    let fill = on ? "var(--alloc)" : n.t === "k" ? "#2c3b57" : n.t === "j" ? "#1f3a33" : n.t === "c" ? "#3a2c55" : "var(--node)";
+    if (n.id === start) fill = "var(--start)";
+    if (tset.has(n.id)) fill = "var(--target)";
+    c.setAttribute("fill", fill);
+    c.setAttribute("stroke", n.t === "k" ? "var(--keystone)" : n.t === "n" ? "#7d8592" : "none");
+    c.setAttribute("stroke-width", n.t === "k" || n.t === "n" ? 10 : 0);
+  }
+  paintIcons();
+  const gl = $("labels"); gl.innerHTML = "";
+  for (const id of state.targets) {
+    const n = byId.get(id), t = document.createElementNS(NS, "text");
+    t.setAttribute("x", n.x); t.setAttribute("y", n.y - R[n.t] - 40);
+    t.setAttribute("text-anchor", "middle"); t.setAttribute("fill", "#ffd2bd");
+    t.setAttribute("font-size", 170); t.setAttribute("paint-order", "stroke");
+    t.setAttribute("stroke", "#0b0d10"); t.setAttribute("stroke-width", 40);
+    t.textContent = n.n; gl.appendChild(t);
+  }
+  const used = Math.max(0, allocated.size - 1), budget = budgetFor(state.level);
+  $("pts").textContent = budget ? `${used} / ${budget}` : used;
+  $("budget").textContent = !budget ? "" : used > budget
+    ? `เกินงบ Level ${state.level} ไป ${used - budget} แต้ม`
+    : `เหลือ ${budget - used} แต้ม ไว้ลง Small passive / Attribute รอบ ๆ เส้นทาง`;
+  $("chips").innerHTML = state.targets.map(id =>
+    `<span class="chip">${esc(byId.get(id).n)}<b data-rm="${id}" title="ลบ">✕</b></span>`).join("");
+  $("warn").textContent = unreachable.length ? "ไปไม่ถึง: " + unreachable.map(i => byId.get(i).n).join(", ") : "";
+  const picks = [...allocated].map(i => byId.get(i)).filter(n => "nkj".includes(n.t));
+  $("list").innerHTML = picks.map(n => `<div class="item" data-go="${n.id}"><div class="nm ${n.t}">${esc(n.n)}${n.t === "k" ? " · Keystone" : ""}</div>` +
+    `<div class="st">${n.s.map(esc).join("<br>")}</div></div>`).join("");
+  writeUrl();
+  if (fit) fitTo(allocated.size > 1 ? [...allocated] : [start], allocated.size > 1 ? 1200 : 6000);
+  setView();
+}
+
+function fitTo(ids, pad) {
+  const xs = ids.map(i => byId.get(i).x), ys = ids.map(i => byId.get(i).y);
+  const x0 = Math.min(...xs) - pad, x1 = Math.max(...xs) + pad, y0 = Math.min(...ys) - pad, y1 = Math.max(...ys) + pad;
+  const box = $("svg").getBoundingClientRect();
+  const ar = box.width > 0 && box.height > 0 ? box.width / box.height : 1;
+  let w = x1 - x0, h = y1 - y0;
+  if (w / h < ar) w = h * ar; else h = w / ar;
+  view = { x: (x0 + x1 - w) / 2, y: (y0 + y1 - h) / 2, w, h };
+}
+function setView() { $("svg").setAttribute("viewBox", `${view.x} ${view.y} ${view.w} ${view.h}`); }
+
+// Short links. ?t= packs node ids as big-endian uint16 then base64url (same idea as
+// GGG's own tree links); ?r= is the older name for a ready-made route.
+function encodeIds(ids) {
+  let bin = "";
+  for (const id of ids) bin += String.fromCharCode(id >> 8, id & 255);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function decodeIds(s) {
+  try {
+    const bin = atob(s.replace(/-/g, "+").replace(/_/g, "/"));
+    const ids = [];
+    for (let i = 0; i + 1 < bin.length; i += 2) ids.push(bin.charCodeAt(i) << 8 | bin.charCodeAt(i + 1));
+    return ids;
+  } catch { return []; }
+}
+// Ready-made routes: ?class=Witch&style=Minion&level=30. routes.json (written by
+// export_tree_routes.py) lists the routes in the KB plus the rules used to build them;
+// any other class + style pair is built here with the same greedy steps and order.
+let routes = null;
+// style may combine several styles, e.g. "Bear,Fire": their Notables all count as main picks
+// must = nodes the user asked for (targets=): linked first, then the style fills the rest of each budget
+function computeRoute(cls, style, must = []) {
+  const R = routes.rules, start = starts.get(cls), parts = style.split(",");
+  const walls = new Set([...starts.values()].filter(id => id !== start));
+  const main = new RegExp(parts.map(s => R.styles[s]).join("|"), "i"), shape = new RegExp(R.shape, "i");
+  const shapeOk = parts.some(s => R.shapeThemes.includes(s));
+  const def = new RegExp(R.defence[R.classDefence[cls] || "Armour"], "i");
+  const sadj = new Map([...adj].map(([k, v]) => [k, [...v].sort((a, b) => a - b)]));
+  const cands = [];
+  for (const n of [...T.nodes].sort((a, b) => a.id - b.id)) {
+    if (n.t !== "n") continue;
+    const text = n.n + " " + n.s.join(" ");
+    if (!shapeOk && shape.test(text)) continue;
+    if (main.test(text)) cands.push([n.id, 1]);
+    else if (def.test(text)) cands.push([n.id, R.weight]);
+  }
+  const alloc = new Set([start]), ids = [], stages = {};
+  for (const m of must) {
+    const path = bfsFrom([...alloc].sort((a, b) => a - b), m, true);
+    if (path) { path.forEach(v => alloc.add(v)); ids.push(m); }
+  }
+  for (const [level, budget] of R.stages) {
+    for (;;) {
+      const order = [...alloc].sort((a, b) => a - b), prev = new Map(order.map(s => [s, null]));
+      for (let i = 0; i < order.length; i++)
+        for (const v of sadj.get(order[i])) if (!prev.has(v) && !walls.has(v)) { prev.set(v, order[i]); order.push(v); }
+      let best = null;
+      for (const [c, w] of cands) {
+        if (alloc.has(c) || !prev.has(c)) continue;
+        const path = [];
+        for (let v = c; !alloc.has(v); v = prev.get(v)) path.push(v);
+        if (alloc.size - 1 + path.length > budget) continue;
+        const score = path.length * w;
+        if (!best || score < best[0]) best = [score, c, path];
+      }
+      if (!best) break;
+      for (const v of best[2]) alloc.add(v);
+      ids.push(best[1]);
+    }
+    stages[String(level)] = [...ids];
+  }
+  return stages;
+}
+// accepts any case and spaces ("melee mace", "bear, fire"); returns null for unknown styles
+function normStyle(style) {
+  if (!routes || !style) return null;
+  const names = Object.keys(routes.rules.styles), byLower = new Map(names.map(n => [n.toLowerCase(), n]));
+  const parts = style.split(",").map(s => byLower.get(s.replace(/\s+/g, "").toLowerCase()));
+  return parts.length && parts.every(Boolean) ? [...new Set(parts)].join(",") : null;
+}
+function routeStages(cls, style, must = []) {
+  if (!style || !starts.has(cls)) return null;
+  const known = !must.length && routes.routes[`${cls}-${style}`];
+  return known ? known.stages : computeRoute(cls, style, must);
+}
+// keep class+style in the URL only while the tree still matches that route exactly
+function onRoute() {
+  const st = state.route && state.route.cls === state.cls && state.route.stages[String(state.level)];
+  return st && st.length === state.targets.length && st.every((id, i) => id === state.targets[i]);
+}
+
+async function readUrl() {
+  const p = new URLSearchParams(location.search);
+  let usedRoute = false;
+  if (p.get("r") || p.get("style")) {
+    try { routes = await (await fetch("routes.json", { cache: "no-cache" })).json(); } catch { routes = null; }
+    let cls = p.get("class"), style = normStyle(p.get("style"));
+    const old = routes && p.get("r") && routes.routes[p.get("r")];  // older ?r=Class-Style links
+    if (old) { cls = old.class; style = old.theme.replace(/ /g, ""); }
+    if (starts.has(cls)) state.cls = cls;
+    // targets= next to style= are must-have nodes; the route is built around them
+    const mustNames = (p.get("targets") || "").split("|").filter(Boolean);
+    const must = mustNames.map(resolveName).filter(Boolean);
+    const stages = routes && routeStages(cls, style, must);
+    if (stages) {
+      usedRoute = true;
+      state.route = { cls, style, stages, must: mustNames.filter(n => resolveName(n)) };
+      p.set("class", cls);
+      const lv = parseInt(p.get("level"), 10);
+      const level = stages[String(lv)] ? lv : Math.max(...Object.keys(stages).map(Number));
+      p.set("level", level);
+      state.targets = [...stages[String(level)]];
+      const bad = mustNames.filter(n => !resolveName(n));
+      if (bad.length) setTimeout(() => $("warn").textContent = "ไม่พบชื่อ: " + bad.join(", "), 0);
+    } else setTimeout(() => $("warn").textContent =
+      "ไม่พบสาย: " + (p.get("style") || p.get("r")) + (routes ? " (มี: " + Object.keys(routes.rules.styles).join(", ") + ")" : ""), 0);
+  }
+  if (p.get("class") && starts.has(p.get("class"))) state.cls = p.get("class");
+  $("cls").value = state.cls;
+  const lv = parseInt(p.get("level"), 10);
+  state.level = lv > 1 && lv <= 100 ? lv : 0;
+  if (state.level && ![...$("lvl").options].some(o => +o.value === state.level))
+    $("lvl").add(new Option(`Level ${state.level} (~${budgetFor(state.level)} แต้ม)`, state.level));
+  $("lvl").value = state.level || "";
+  if (usedRoute) return;
+  const bad = [];
+  for (const nm of (p.get("targets") || "").split("|").filter(Boolean)) {
+    const id = resolveName(nm);
+    if (id) { if (!state.targets.includes(id)) state.targets.push(id); } else bad.push(nm);
+  }
+  const extra = [...(p.get("nodes") || "").split(",").map(Number), ...decodeIds(p.get("t") || "")];
+  for (const id of extra.filter(i => byId.has(i)))
+    if (!state.targets.includes(id)) state.targets.push(id);
+  if (bad.length) setTimeout(() => $("warn").textContent = "ไม่พบชื่อ: " + bad.join(", "), 0);
+  else if (!state.targets.length && p.get("class") && !p.get("style") && !p.get("r"))
+    setTimeout(() => $("warn").textContent =
+      "ลิงก์นี้ยังไม่ได้เลือก node: ใส่ &style= (เช่น Bear, Slam, Minion, Lightning) หรือคลิก Notable บน Tree", 0);
+}
+function writeUrl() {
+  let p;
+  if (onRoute()) {
+    p = new URLSearchParams({ class: state.cls, style: state.route.style, level: state.level });
+    if (state.route.must.length) p.set("targets", state.route.must.join("|"));
+  } else {
+    state.route = null;
+    p = new URLSearchParams({ class: state.cls });
+    if (state.level) p.set("level", state.level);
+    if (state.targets.length) p.set("t", encodeIds(state.targets));
+  }
+  history.replaceState(null, "", "?" + p.toString());
+}
+
+// UI events
+$("cls").onchange = e => { state.cls = e.target.value; update(true); };
+$("lvl").onchange = e => {
+  const prevOnRoute = onRoute();
+  state.level = +e.target.value || 0;
+  // on a ready-made route, switching level shows that level range's part of the route
+  const st = prevOnRoute && state.route.stages[String(state.level)];
+  if (st) { state.targets = [...st]; update(true); } else update(false);
+};
+$("q").onchange = e => {
+  const id = resolveName(e.target.value);
+  if (id && !state.targets.includes(id)) { state.targets.push(id); update(true); }
+  else if (!id) $("warn").textContent = "ไม่พบชื่อ: " + e.target.value;
+  e.target.value = "";
+};
+$("chips").onclick = e => {
+  const id = +e.target.dataset.rm;
+  if (id) { state.targets = state.targets.filter(t => t !== id); update(true); }
+};
+$("list").onclick = e => {
+  const it = e.target.closest("[data-go]");
+  if (it) { fitTo([+it.dataset.go], 2500); setView(); }
+};
+$("clear").onclick = () => { state.targets = []; update(true); };
+$("fit").onclick = () => { update(true); };
+$("copy").onclick = async () => {
+  try { await navigator.clipboard.writeText(location.href); $("copy").textContent = "คัดลอกแล้ว"; }
+  catch { $("copy").textContent = "คัดลอกไม่ได้"; }
+  setTimeout(() => $("copy").textContent = "คัดลอกลิงก์", 1500);
+};
+
+// Click a notable/keystone on the tree to toggle it as a target.
+const toggleNode = e => {
+  const n = byId.get(+e.target.dataset.id);
+  if (!n || !"nkj".includes(n.t)) return;
+  state.targets = state.targets.includes(n.id) ? state.targets.filter(t => t !== n.id) : [...state.targets, n.id];
+  update(false);
+};
+
+// Tooltip
+$("nodes").onmousemove = e => {
+  const n = byId.get(+e.target.dataset.id), tip = $("tip");
+  if (!n) { tip.style.display = "none"; return; }
+  tip.innerHTML = `<div class="nm">${esc(n.n)}</div>${n.s.map(esc).join("<br>")}`;
+  const box = $("svg").getBoundingClientRect();
+  tip.style.left = Math.min(e.clientX - box.left + 14, box.width - 330) + "px";
+  tip.style.top = (e.clientY - box.top + 14) + "px";
+  tip.style.display = "block";
+};
+$("nodes").onmouseleave = () => $("tip").style.display = "none";
+
+// Pan + zoom
+const svg = $("svg");
+let drag = null;
+svg.addEventListener("pointerdown", e => { drag = { x: e.clientX, y: e.clientY, v: { ...view }, moved: false }; svg.setPointerCapture(e.pointerId); });
+svg.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const box = svg.getBoundingClientRect(), k = view.w / box.width;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  if (Math.abs(dx) + Math.abs(dy) > 3) { drag.moved = true; svg.classList.add("drag"); }
+  view.x = drag.v.x - dx * k; view.y = drag.v.y - dy * k; setView();
+});
+svg.addEventListener("pointerup", e => {
+  svg.classList.remove("drag");
+  if (drag && !drag.moved) {
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    if (el && el.dataset && el.dataset.id) toggleNode({ target: el });
+  }
+  drag = null;
+});
+svg.addEventListener("wheel", e => {
+  e.preventDefault();
+  const box = svg.getBoundingClientRect(), f = e.deltaY > 0 ? 1.2 : 1 / 1.2;
+  const mx = view.x + (e.clientX - box.left) / box.width * view.w;
+  const my = view.y + (e.clientY - box.top) / box.height * view.h;
+  view = { x: mx - (mx - view.x) * f, y: my - (my - view.y) * f, w: view.w * f, h: view.h * f };
+  setView();
+}, { passive: false });
+
+let lastBox = "";
+new ResizeObserver(() => {
+  const b = svg.getBoundingClientRect(), key = `${Math.round(b.width)}x${Math.round(b.height)}`;
+  if (T && b.width && b.height && key !== lastBox) { lastBox = key; update(true); }
+}).observe(svg);
+
+load();
+</script>
+</body>
+</html>
