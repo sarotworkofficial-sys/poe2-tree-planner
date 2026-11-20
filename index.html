@@ -599,6 +599,9 @@ async function readUrl() {
       if (!p.get("asc")) p.set("asc", key);
     } else setTimeout(() => $("warn").textContent = "ไม่พบ Build: " + p.get("build"), 0);
   }
+  // asc=<Ascendancy> decides the class, so ?class=Druid&asc=Titan still opens the Warrior tree
+  const ascKey = Object.keys(T.asc || {}).find(a => a.toLowerCase() === (p.get("asc") || "").trim().toLowerCase());
+  if (ascKey) { p.set("asc", ascKey); p.set("class", T.asc[ascKey].cls); }
   override = {};
   for (const k of ["skill", "sup", "item"])
     if (p.get(k)) override[k] = p.get(k).split("|").map(s => s.trim()).filter(Boolean);
